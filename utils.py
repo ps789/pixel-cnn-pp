@@ -1,5 +1,5 @@
 import pdb
-import torch 
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
@@ -30,6 +30,21 @@ def log_prob_from_logits(x):
     m, _ = torch.max(x, dim=axis, keepdim=True)
     return x - m - torch.log(torch.sum(torch.exp(x - m), dim=axis, keepdim=True))
 
+def energy_distance(x, x_sample):
+    l1 = 0.
+    for xs in x_sample:
+        l1 += torch.sum(torch.pow(1e-10 + torch.sum(torch.square(127.5*(x-xs)),dim = 3), 0.75))
+    l1 /= len(x_sample)
+
+    l2 = 0.
+    n = 0
+    for i in range(len(x_sample)):
+        for j in range(i+1,len(x_sample)):
+            l2 += torch.sum(torch.pow(1e-10 + torch.sum(torch.square(127.5*(x_sample[i] - x_sample[j])), dim = 3), 0.75))
+            n += 1
+    l2 /= n
+
+    return 2.*l1 - l2
 
 def discretized_mix_logistic_loss(x, l):
     """ log-likelihood for mixture of discretized logistics, assumes the data has been rescaled to [-1,1] interval """
@@ -38,15 +53,15 @@ def discretized_mix_logistic_loss(x, l):
     l = l.permute(0, 2, 3, 1)
     xs = [int(y) for y in x.size()]
     ls = [int(y) for y in l.size()]
-   
+
     # here and below: unpacking the params of the mixture of logistics
-    nr_mix = int(ls[-1] / 10) 
+    nr_mix = int(ls[-1] / 10)
     logit_probs = l[:, :, :, :nr_mix]
     l = l[:, :, :, nr_mix:].contiguous().view(xs + [nr_mix * 3]) # 3 for mean, scale, coef
     means = l[:, :, :, :, :nr_mix]
     # log_scales = torch.max(l[:, :, :, :, nr_mix:2 * nr_mix], -7.)
     log_scales = torch.clamp(l[:, :, :, :, nr_mix:2 * nr_mix], min=-7.)
-   
+
     coeffs = F.tanh(l[:, :, :, :, 2 * nr_mix:3 * nr_mix])
     # here and below: getting the means and adjusting them based on preceding
     # sub-pixels
@@ -87,7 +102,7 @@ def discretized_mix_logistic_loss(x, l):
     # if the probability on a sub-pixel is below 1e-5, we use an approximation
     # based on the assumption that the log-density is constant in the bin of
     # the observed sub-pixel value
-    
+
     inner_inner_cond = (cdf_delta > 1e-5).float()
     inner_inner_out  = inner_inner_cond * torch.log(torch.clamp(cdf_delta, min=1e-12)) + (1. - inner_inner_cond) * (log_pdf_mid - np.log(127.5))
     inner_cond       = (x > 0.999).float()
@@ -95,7 +110,7 @@ def discretized_mix_logistic_loss(x, l):
     cond             = (x < -0.999).float()
     log_probs        = cond * log_cdf_plus + (1. - cond) * inner_out
     log_probs        = torch.sum(log_probs, dim=3) + log_prob_from_logits(logit_probs)
-    
+
     return -torch.sum(log_sum_exp(log_probs))
 
 
@@ -134,7 +149,7 @@ def discretized_mix_logistic_loss_1d(x, l):
     # log probability in the center of the bin, to be used in extreme cases
     # (not actually used in our code)
     log_pdf_mid = mid_in - log_scales - 2. * F.softplus(mid_in)
-    
+
     inner_inner_cond = (cdf_delta > 1e-5).float()
     inner_inner_out  = inner_inner_cond * torch.log(torch.clamp(cdf_delta, min=1e-12)) + (1. - inner_inner_cond) * (log_pdf_mid - np.log(127.5))
     inner_cond       = (x > 0.999).float()
@@ -142,7 +157,7 @@ def discretized_mix_logistic_loss_1d(x, l):
     cond             = (x < -0.999).float()
     log_probs        = cond * log_cdf_plus + (1. - cond) * inner_out
     log_probs        = torch.sum(log_probs, dim=3) + log_prob_from_logits(logit_probs)
-    
+
     return -torch.sum(log_sum_exp(log_probs))
 
 
@@ -170,11 +185,11 @@ def sample_from_discretized_mix_logistic_1d(l, nr_mix):
     temp.uniform_(1e-5, 1. - 1e-5)
     temp = logit_probs.data - torch.log(- torch.log(temp))
     _, argmax = temp.max(dim=3)
-   
+
     one_hot = to_one_hot(argmax, nr_mix)
     sel = one_hot.view(xs[:-1] + [1, nr_mix])
     # select logistic parameters
-    means = torch.sum(l[:, :, :, :, :nr_mix] * sel, dim=4) 
+    means = torch.sum(l[:, :, :, :, :nr_mix] * sel, dim=4)
     log_scales = torch.clamp(torch.sum(
         l[:, :, :, :, nr_mix:2 * nr_mix] * sel, dim=4), min=-7.)
     u = torch.FloatTensor(means.size())
@@ -202,11 +217,11 @@ def sample_from_discretized_mix_logistic(l, nr_mix):
     temp.uniform_(1e-5, 1. - 1e-5)
     temp = logit_probs.data - torch.log(- torch.log(temp))
     _, argmax = temp.max(dim=3)
-   
+
     one_hot = to_one_hot(argmax, nr_mix)
     sel = one_hot.view(xs[:-1] + [1, nr_mix])
     # select logistic parameters
-    means = torch.sum(l[:, :, :, :, :nr_mix] * sel, dim=4) 
+    means = torch.sum(l[:, :, :, :, :nr_mix] * sel, dim=4)
     log_scales = torch.clamp(torch.sum(
         l[:, :, :, :, nr_mix:2 * nr_mix] * sel, dim=4), min=-7.)
     coeffs = torch.sum(F.tanh(
@@ -235,7 +250,7 @@ def sample_from_discretized_mix_logistic(l, nr_mix):
 def down_shift(x, pad=None):
     # Pytorch ordering
     xs = [int(y) for y in x.size()]
-    # when downshifting, the last row is removed 
+    # when downshifting, the last row is removed
     x = x[:, :, :xs[2] - 1, :]
     # padding left, padding right, padding top, padding bottom
     pad = nn.ZeroPad2d((0, 0, 1, 0)) if pad is None else pad
@@ -245,7 +260,7 @@ def down_shift(x, pad=None):
 def right_shift(x, pad=None):
     # Pytorch ordering
     xs = [int(y) for y in x.size()]
-    # when righshifting, the last column is removed 
+    # when righshifting, the last column is removed
     x = x[:, :, :, :xs[3] - 1]
     # padding left, padding right, padding top, padding bottom
     pad = nn.ZeroPad2d((1, 0, 0, 0)) if pad is None else pad
@@ -257,7 +272,7 @@ def load_part_of_model(model, path):
     added = 0
     for name, param in params.items():
         if name in model.state_dict().keys():
-            try : 
+            try :
                 model.state_dict()[name].copy_(param)
                 added += 1
             except Exception as e:

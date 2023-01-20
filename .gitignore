@@ -1,0 +1,5 @@
+images
+*.npy
+runs
+models
+data

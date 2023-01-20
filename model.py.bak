@@ -98,23 +98,19 @@ class PixelCNN(nn.Module):
                                             filter_size=(2,1), shift_output_right=True)])
     
         num_mix = 3 if self.input_channels == 1 else 10
-        #self.nin_out = nin(nr_filters, num_mix * nr_logistic_mix)
-        self.nin_energy = nin(nr_filters, 64)
-        self.nin_energy2 = nin(4, 64)
-        self.nin_energy3 = nin(128, 64)
-        self.nin_energy4 = nin(128, input_channels)#change with block size
+        self.nin_out = nin(nr_filters, num_mix * nr_logistic_mix)
         self.init_padding = None
 
 
     def forward(self, x, sample=False):
         # similar as done in the tf repo :  
-        xs =  [int(y) for y in x.size()]
-
         if self.init_padding is None and not sample: 
+            xs = [int(y) for y in x.size()]
             padding = Variable(torch.ones(xs[0], 1, xs[2], xs[3]), requires_grad=False)
             self.init_padding = padding.cuda() if x.is_cuda else padding
         
         if sample : 
+            xs = [int(y) for y in x.size()]
             padding = Variable(torch.ones(xs[0], 1, xs[2], xs[3]), requires_grad=False)
             padding = padding.cuda() if x.is_cuda else padding
             x = torch.cat((x, padding), 1)
@@ -147,22 +143,7 @@ class PixelCNN(nn.Module):
                 u  = self.upsize_u_stream[i](u)
                 ul = self.upsize_ul_stream[i](ul)
 
-        if True:#energy_distance:
-            f = self.nin_energy(F.elu(ul))
-            # generate 10 samples
-            fs = []
-            for rep in range(4):
-                fs.append(f)
-            f = torch.cat(fs, 0)
-            fs = [int(y) for y in f.size()]
-            f += self.nin_energy2((torch.rand(size=[fs[0]] + [4] + fs[2:])*2-1).cuda())
-            f = self.nin_energy3(concat_elu(f))
-            #multiply 3 by block size
-            x_sample = torch.tanh(self.nin_energy4(concat_elu(f)))
-            x_sample = torch.split(x_sample, xs[0])
-            return x_sample
-        else:
-            print("hi")#x_out = self.nin_out(F.elu(ul))
+        x_out = self.nin_out(F.elu(ul))
 
         assert len(u_list) == len(ul_list) == 0, pdb.set_trace()
 
@@ -189,4 +170,4 @@ if __name__ == '__main__':
     model = model.cuda()
     out = model(x_v)
     loss = discretized_mix_logistic_loss(x_v, out)
-    print(('loss : %s' % loss.data[0]))
+    print('loss : %s' % loss.data[0])

@@ -33,14 +33,14 @@ def log_prob_from_logits(x):
 def energy_distance(x, x_sample):
     l1 = 0.
     for xs in x_sample:
-        l1 += torch.sum(torch.pow(1e-10 + torch.sum(torch.square(127.5*(x-xs)),dim = 3), 0.75))
+        l1 += torch.sum(torch.pow(1e-10 + torch.sum(torch.square(127.5*(x-xs)),dim = 1), 0.75))
     l1 /= len(x_sample)
 
     l2 = 0.
     n = 0
     for i in range(len(x_sample)):
         for j in range(i+1,len(x_sample)):
-            l2 += torch.sum(torch.pow(1e-10 + torch.sum(torch.square(127.5*(x_sample[i] - x_sample[j])), dim = 3), 0.75))
+            l2 += torch.sum(torch.pow(1e-10 + torch.sum(torch.square(127.5*(x_sample[i] - x_sample[j])), dim = 1), 0.75))
             n += 1
     l2 /= n
 
@@ -270,12 +270,12 @@ def right_shift(x, pad=None):
 def load_part_of_model(model, path):
     params = torch.load(path)
     added = 0
-    for name, param in params.items():
-        if name in model.state_dict().keys():
+    for name, param in list(params.items()):
+        if name in list(model.state_dict().keys()):
             try :
                 model.state_dict()[name].copy_(param)
                 added += 1
             except Exception as e:
-                print e
+                print(e)
                 pass
-    print('added %s of params:' % (added / float(len(model.state_dict().keys()))))
+    print(('added %s of params:' % (added / float(len(list(model.state_dict().keys()))))))

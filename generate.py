@@ -13,8 +13,6 @@ from utils import *
 from model import * 
 from PIL import Image
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(torch.cuda.is_available())
-print(torch.cuda.device_count())
 parser = argparse.ArgumentParser()
 # data I/O
 parser.add_argument('-i', '--data_dir', type=str,
@@ -40,7 +38,7 @@ parser.add_argument('-l', '--lr', type=float,
                     default=0.0002, help='Base learning rate')
 parser.add_argument('-e', '--lr_decay', type=float, default=0.999995,
                     help='Learning rate decay, applied every step of the optimization')
-parser.add_argument('-b', '--batch_size', type=int, default=50,
+parser.add_argument('-b', '--batch_size', type=int, default=1000,
                     help='Batch size during training per GPU')
 parser.add_argument('-x', '--max_epochs', type=int,
                     default=5000, help='How many epochs to run in total?')
@@ -56,10 +54,8 @@ torch.manual_seed(args.seed)
 np.random.seed(args.seed)
 
 model_name = 'pcnn_lr{:.5f}_nr-resnet{}_nr-filters{}'.format(args.lr, args.nr_resnet, args.nr_filters)
-assert not os.path.exists(os.path.join('runs', model_name)), '{} already exists!'.format(model_name)
-writer = SummaryWriter(log_dir=os.path.join('runs', model_name))
 
-sample_batch_size = 25
+sample_batch_size = 100
 obs = (1, 28, 28) if 'mnist' in args.dataset else (3, 32, 32)
 input_channels = obs[0]*args.block_dim * args.block_dim
 rescaling     = lambda x : (x - .5) * 2.
@@ -129,7 +125,7 @@ model = model.cuda()
 
 if args.load_params:
     load_part_of_model(model, args.load_params)
-    # model.load_state_dict(torch.load(args.load_params))
+    model.load_state_dict(torch.load(args.load_params))
     print('model parameters loaded')
 
 optimizer = optim.Adam(model.parameters(), lr=args.lr)
@@ -137,65 +133,39 @@ scheduler = lr_scheduler.StepLR(optimizer, step_size=1, gamma=args.lr_decay)
 
 def sample(model):
     model.train(False)
-    data = torch.zeros(sample_batch_size, obs[0], obs[1], obs[2])
+    data = torch.zeros(sample_batch_size, obs[0]*args.block_dim * args.block_dim, obs[1]//args.block_dim, obs[2]//args.block_dim)
     data = data.cuda()
-    for i in range(obs[1]):
-        for j in range(obs[2]):
+    for i in range(obs[1]//args.block_dim):
+        for j in range(obs[2]//args.block_dim):
             data_v = Variable(data, volatile=True)
             out   = model(data_v, sample=True)
             out_sample = sample_op(out)
             data[:, :, i, j] = out_sample.data[:, :, i, j]
-    return data
+    data = data.cpu().detach().numpy()
+    pixels2 = np.zeros(shape=(sample_batch_size, obs[0], obs[1], obs[2]))
+    print(obs[0])
+    for i in range(obs[1]//args.block_dim):
+      for j in range(obs[2]//args.block_dim):
+          digit = data[:, :, i, j].reshape([sample_batch_size, obs[0], args.block_dim, args.block_dim])
+          pixels2[:, :, i * args.block_dim: (i + 1) * args.block_dim,
+               j * args.block_dim: (j + 1) * args.block_dim] = digit
+
+    return torch.from_numpy(pixels2).cuda()
 
 print('starting training')
 writes = 0
-for epoch in range(args.max_epochs):
-    model.train(True)
-    torch.cuda.synchronize()
-    train_loss = 0.
-    time_ = time.time()
-    model.train()
-    for batch_idx, (input,_) in enumerate(train_loader):
-        input = input.cuda(non_blocking=True)
-        input = Variable(input)
-        output = model(input)
-        loss = loss_op(input, output)
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        train_loss += loss.data.item()
-        if (batch_idx +1) % args.print_every == 0 : 
-            deno = args.print_every * args.batch_size * np.prod(obs) * np.log(2.)
-            writer.add_scalar('train/bpd', (train_loss / deno), writes)
-            print(('loss : {:.4f}, time : {:.4f}'.format(
-                (train_loss / deno), 
-                (time.time() - time_))))
-            train_loss = 0.
-            writes += 1
-            time_ = time.time()
-            
+model.eval()
+with torch.no_grad():
+    sample_list = []
+    start_time = time.time()
+    for i in range(100):
+        print(i, flush = True)
+        sample_t = sample(model)
+        sample_t = rescaling_inv(sample_t)
+        sample_list.append(sample_t.cpu().detach().numpy().transpose(0, 2, 3, 1))
+    print(time.time() - start_time, flush = True)
+    final_sample = np.concatenate(sample_list, axis = 0)
 
-    # decrease learning rate
-    scheduler.step()
-    
-    torch.cuda.synchronize()
-    model.eval()
-    test_loss = 0.
-    for batch_idx, (input,_) in enumerate(test_loader):
-        input = input.cuda(non_blocking=True)
-        input_var = Variable(input)
-        output = model(input_var)
-        loss = loss_op(input_var, output)
-        test_loss += loss.data.item()
-        del loss, output
-
-    deno = batch_idx * args.batch_size * np.prod(obs) * np.log(2.)
-    writer.add_scalar('test/bpd', (test_loss / deno), writes)
-    print(('test loss : %s' % (test_loss / deno)))
-    
-    if (epoch + 1) % args.save_interval == 0: 
-        torch.save(model.state_dict(), 'models/{}_{}.pth'.format(model_name, epoch))
-        #print('sampling...')
-        #sample_t = sample(model)
-        #sample_t = rescaling_inv(sample_t)
-        #utils.save_image(sample_t,'images/{}_{}.png'.format(model_name, epoch),            nrow=5, padding=0)
+    np.save("pixelcnn_pp_energy_block1.npy", final_sample)
+#print(sample_t.size(), flush = True)
+#utils.save_image(sample_t,'images/samples.png',            nrow=5, padding=0)

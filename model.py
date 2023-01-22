@@ -54,6 +54,7 @@ class PixelCNNLayer_down(nn.Module):
         
         return u, ul
          
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class PixelCNN(nn.Module):
     def __init__(self, nr_resnet=5, nr_filters=80, nr_logistic_mix=10, 
@@ -98,11 +99,14 @@ class PixelCNN(nn.Module):
                                             filter_size=(2,1), shift_output_right=True)])
     
         num_mix = 3 if self.input_channels == 1 else 10
+        
         #self.nin_out = nin(nr_filters, num_mix * nr_logistic_mix)
-        self.nin_energy = nin(nr_filters, 64)
-        self.nin_energy2 = nin(4, 64)
-        self.nin_energy3 = nin(128, 64)
-        self.nin_energy4 = nin(128, input_channels)#change with block size
+        #self.nin_energy = nin(nr_filters, 64)
+        #self.nin_energy2 = nin(4, 64)
+        #self.nin_energy3 = nin(128, 64)
+        #self.nin_energy4 = nin(128, input_channels)#change with block size
+        self.nin_energy = nn.ModuleList([nin(nr_filters + input_channels, nr_filters + input_channels) for _ in range(4)])
+        self.nin_out = nin(nr_filters+input_channels, input_channels)
         self.init_padding = None
 
 
@@ -146,8 +150,21 @@ class PixelCNN(nn.Module):
             if i != 2 :
                 u  = self.upsize_u_stream[i](u)
                 ul = self.upsize_ul_stream[i](ul)
+        if True:
+            f = F.elu(ul)
+            fs = []
+            for rep in range(10):
+                fs.append(f)
+            f = torch.cat(fs, 0)
 
-        if True:#energy_distance:
+            fs = [int(y) for y in f.size()]
+            sample = torch.rand(size = [fs[0]] + [self.input_channels] + fs[2:]).cuda()
+            output = torch.cat([f, sample], dim = 1)
+            for i in range(4):
+                output = F.elu(self.nin_energy[i](output)) + output
+            output = torch.split(torch.tanh(self.nin_out(output)), xs[0])
+            return output
+        if False:#energy_distance:
             f = self.nin_energy(F.elu(ul))
             # generate 10 samples
             fs = []
@@ -159,10 +176,11 @@ class PixelCNN(nn.Module):
             f = self.nin_energy3(concat_elu(f))
             #multiply 3 by block size
             x_sample = torch.tanh(self.nin_energy4(concat_elu(f)))
+            print(x_sample.shape)
             x_sample = torch.split(x_sample, xs[0])
             return x_sample
-        else:
-            print("hi")#x_out = self.nin_out(F.elu(ul))
+        if False:
+            x_out = self.nin_out(F.elu(ul))
 
         assert len(u_list) == len(ul_list) == 0, pdb.set_trace()
 

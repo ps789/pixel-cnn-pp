@@ -12,6 +12,7 @@ from tensorboardX import SummaryWriter
 from utils import * 
 from model import * 
 from PIL import Image
+from tqdm import tqdm
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(torch.cuda.is_available())
 print(torch.cuda.device_count())
@@ -141,7 +142,7 @@ def sample(model):
     data = data.cuda()
     for i in range(obs[1]):
         for j in range(obs[2]):
-            data_v = Variable(data, volatile=True)
+            data_v = Variable(data, no_grad=True)
             out   = model(data_v, sample=True)
             out_sample = sample_op(out)
             data[:, :, i, j] = out_sample.data[:, :, i, j]
@@ -155,24 +156,28 @@ for epoch in range(args.max_epochs):
     train_loss = 0.
     time_ = time.time()
     model.train()
-    for batch_idx, (input,_) in enumerate(train_loader):
-        input = input.cuda(non_blocking=True)
-        input = Variable(input)
-        output = model(input)
-        loss = loss_op(input, output)
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        train_loss += loss.data.item()
-        if (batch_idx +1) % args.print_every == 0 : 
-            deno = args.print_every * args.batch_size * np.prod(obs) * np.log(2.)
-            writer.add_scalar('train/bpd', (train_loss / deno), writes)
-            print(('loss : {:.4f}, time : {:.4f}'.format(
-                (train_loss / deno), 
-                (time.time() - time_))))
-            train_loss = 0.
-            writes += 1
-            time_ = time.time()
+    with tqdm(enumerate(train_loader)) as pbar:
+        for batch_idx, (input,_) in pbar:
+            input = input.cuda(non_blocking=True)
+            input = Variable(input)
+            output = model(input)
+            loss = loss_op(input, output)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            train_loss += loss.data.item()
+            if (batch_idx +1) % args.print_every == 0 : 
+                deno = args.print_every * args.batch_size * np.prod(obs) * np.log(2.)
+                writer.add_scalar('train/bpd', (train_loss / deno), writes)
+                print(('loss : {:.4f}, time : {:.4f}'.format(
+                    (train_loss / deno), 
+                    (time.time() - time_))))
+                train_loss = 0.
+                writes += 1
+                time_ = time.time()
+            pbar.set_description(
+                        f"Loss: {loss:.5f}"
+                        )
             
 
     # decrease learning rate

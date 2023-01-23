@@ -38,7 +38,7 @@ parser.add_argument('-n', '--nr_filters', type=int, default=160,
 parser.add_argument('-m', '--nr_logistic_mix', type=int, default=10,
                     help='Number of logistic components in the mixture. Higher = more flexible model')
 parser.add_argument('-l', '--lr', type=float,
-                    default=0.0002, help='Base learning rate')
+                    default=5e-5, help='Base learning rate')
 parser.add_argument('-e', '--lr_decay', type=float, default=0.999995,
                     help='Learning rate decay, applied every step of the optimization')
 parser.add_argument('-b', '--batch_size', type=int, default=50,
@@ -56,7 +56,7 @@ args = parser.parse_args()
 torch.manual_seed(args.seed)
 np.random.seed(args.seed)
 
-model_name = 'pcnn_kernel_block{}'.format(args.block_dim)
+model_name = 'apcnn_kernel_block{}'.format(args.block_dim)
 assert not os.path.exists(os.path.join('runs', model_name)), '{} already exists!'.format(model_name)
 writer = SummaryWriter(log_dir=os.path.join('runs', model_name))
 

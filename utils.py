@@ -45,14 +45,13 @@ def kernelized_energy_distance(x, x_sample, sigma = [2, 5, 10, 20, 40, 80], redu
     # from batcj, chan, x, y, samples to batch, x, y, samples, chan
     X = torch.permute(torch.stack(list(x_sample) + [x], dim = -1), [0, 2, 3, 4, 1])
     d = X.shape[3]
-    
     XX = torch.matmul(X, torch.transpose(X, 3, 4)) # shape=(batch, nsamples+1, nsamples+1)
     X2 = torch.sum((X * X), dim = 4, keepdim=True) # shape=(batch, nsamples+1, 1)
     # exponent entries of the RBF kernel (without the sigma) for each
     # combination of the rows in 'X'
     # -0.5 * (x^Tx - 2*x^Ty + y^Ty)
-    exponent = XX - 0.5 * X2 - 0.5 * torch.transpose(X2, 1, 2)
-    exponent = exponent / math.sqrt(d) # shape=(batch, x, y, nsamples+1, nsamples+1)
+    exponent = XX - 0.5 * X2 - 0.5 * torch.transpose(X2, 3, 4)
+    exponent = exponent # shape=(batch, x, y, nsamples+1, nsamples+1)
     # exponent = torch.clip(exponent, -1e4, 1e4)
     # scaling constants for each of the rows in 'X'
     s = make_scale_matrix(X.shape[3]-1, 1, device=device)
@@ -75,7 +74,7 @@ def kernelized_energy_distance(x, x_sample, sigma = [2, 5, 10, 20, 40, 80], redu
         final_loss = loss
     else:
         raise ValueError()
-    return final_loss.mean()
+    return torch.sqrt((final_loss).mean()+1e-5)
 
 def energy_distance(x, x_sample):
     l1 = 0.

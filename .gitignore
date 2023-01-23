@@ -3,3 +3,4 @@ images
 runs
 models
 data
+.nfs*

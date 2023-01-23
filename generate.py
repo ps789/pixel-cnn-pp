@@ -119,7 +119,7 @@ elif 'cifar' in args.dataset :
 else :
     raise Exception('{} dataset not in {mnist, cifar10}'.format(args.dataset))
 
-model = PixelCNN(nr_resnet=args.nr_resnet, nr_filters=args.nr_filters, 
+model = PixelCNN(nr_resnet=args.nr_resnet, nr_filters=args.nr_filters * args.block_dim, 
             input_channels=input_channels, nr_logistic_mix=args.nr_logistic_mix)
 model = model.cuda()
 
@@ -158,7 +158,7 @@ model.eval()
 with torch.no_grad():
     sample_list = []
     start_time = time.time()
-    for i in range(1):
+    for i in range(100):
         print(i, flush = True)
         sample_t = sample(model)
         sample_t = rescaling_inv(sample_t)
@@ -166,6 +166,6 @@ with torch.no_grad():
     print(time.time() - start_time, flush = True)
     final_sample = np.concatenate(sample_list, axis = 0)
 
-    np.save("block1_alt.npy", final_sample)
+    np.save("block{}_alt.npy".format(args.block_dim), final_sample)
 #print(sample_t.size(), flush = True)
 #utils.save_image(sample_t,'images/samples.png',            nrow=5, padding=0)

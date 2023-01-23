@@ -56,7 +56,7 @@ args = parser.parse_args()
 torch.manual_seed(args.seed)
 np.random.seed(args.seed)
 
-model_name = 'pcnn_lr{:.5f}_nr-resnet{}_nr-filters{}'.format(args.lr, args.nr_resnet, args.nr_filters)
+model_name = 'pcnn_kernel_block{}'.format(args.block_dim)
 assert not os.path.exists(os.path.join('runs', model_name)), '{} already exists!'.format(model_name)
 writer = SummaryWriter(log_dir=os.path.join('runs', model_name))
 
@@ -111,7 +111,7 @@ if 'mnist' in args.dataset :
 
 elif 'cifar' in args.dataset : 
     trainset = torchvision.datasets.CIFAR10(root='./data', train=True,
-                                        download=True, transform=ds_transforms)
+                                            download=True, transform=ds_transforms)
     train_loader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size,
                                           shuffle=True, num_workers=2)
 
@@ -119,12 +119,12 @@ elif 'cifar' in args.dataset :
                                        download=True, transform=ds_transforms)
     test_loader = torch.utils.data.DataLoader(testset, batch_size=args.batch_size,
                                          shuffle=False, num_workers=2)
-    loss_op   = lambda real, fake : energy_distance(real, fake)#discretized_mix_logistic_loss(real, fake)
+    loss_op   = lambda real, fake : kernelized_energy_distance(real, fake, device = device, reduction = "sum")#discretized_mix_logistic_loss(real, fake)
     sample_op = lambda x : x[0]#sample_from_discretized_mix_logistic(x, args.nr_logistic_mix)
 else :
     raise Exception('{} dataset not in {mnist, cifar10}'.format(args.dataset))
 
-model = PixelCNN(nr_resnet=args.nr_resnet, nr_filters=args.nr_filters, 
+model = PixelCNN(nr_resnet=args.nr_resnet, nr_filters=args.nr_filters*args.block_dim, 
             input_channels=input_channels, nr_logistic_mix=args.nr_logistic_mix)
 model = model.cuda()
 

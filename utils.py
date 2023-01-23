@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 from torch.nn.utils import weight_norm as wn
 import numpy as np
-
+import math
 
 def concat_elu(x):
     """ like concatenated ReLU (http://arxiv.org/abs/1603.05201), but then with ELU """
@@ -13,7 +13,11 @@ def concat_elu(x):
     axis = len(x.size()) - 3
     return F.elu(torch.cat([x, -x], dim=axis))
 
-
+def make_scale_matrix(num_gen, num_orig, device = 'cpu'):
+    # first 'N' entries have '1/N', next 'M' entries have '-1/M'
+    s1 =  torch.ones(num_gen, 1, requires_grad=False, device = device)/num_gen
+    s2 = -torch.ones(num_orig, 1, requires_grad=False, device=device)/num_orig
+    return torch.cat([s1, s2], dim=0)
 def log_sum_exp(x):
     """ numerically stable log_sum_exp implementation that prevents overflow """
     # TF ordering
@@ -29,6 +33,49 @@ def log_prob_from_logits(x):
     axis = len(x.size()) - 1
     m, _ = torch.max(x, dim=axis, keepdim=True)
     return x - m - torch.log(torch.sum(torch.exp(x - m), dim=axis, keepdim=True))
+
+def kernelized_energy_distance(x, x_sample, sigma = [2, 5, 10, 20, 40, 80], reduction='mean', device = 'cpu'):
+    """Computes this kernelized energy loss
+    Tensors x and gen_x need to have shape: (batch, chans, dimx, dimy, nsamples)
+    For the tensor of real data x, we should have nsamples=1.
+    This code will compute the kernelized MMD along the dimension 4 (of size nsamples)
+    It will then take the average across all dimensions.
+    """
+    # WARNING: not tested
+    # from batcj, chan, x, y, samples to batch, x, y, samples, chan
+    X = torch.permute(torch.stack(list(x_sample) + [x], dim = -1), [0, 2, 3, 4, 1])
+    d = X.shape[3]
+    
+    XX = torch.matmul(X, torch.transpose(X, 3, 4)) # shape=(batch, nsamples+1, nsamples+1)
+    X2 = torch.sum((X * X), dim = 4, keepdim=True) # shape=(batch, nsamples+1, 1)
+    # exponent entries of the RBF kernel (without the sigma) for each
+    # combination of the rows in 'X'
+    # -0.5 * (x^Tx - 2*x^Ty + y^Ty)
+    exponent = XX - 0.5 * X2 - 0.5 * torch.transpose(X2, 1, 2)
+    exponent = exponent / math.sqrt(d) # shape=(batch, x, y, nsamples+1, nsamples+1)
+    # exponent = torch.clip(exponent, -1e4, 1e4)
+    # scaling constants for each of the rows in 'X'
+    s = make_scale_matrix(X.shape[3]-1, 1, device=device)
+    # scaling factors of each of the kernel values, corresponding to the
+    # exponent values
+    S = torch.matmul(s, torch.transpose(s, 0, 1)).unsqueeze(0) # shape=(1, nsamples+1, nsamples+1)
+    loss = 0
+    # for each bandwidth parameter, compute the MMD value and add them all
+    for i in range(len(sigma)):
+        # kernel values for each combination of the rows in 'X'
+        v = 1.0 / sigma[i] * exponent
+        kernel_val = torch.exp(v)
+        loss += torch.sum(S[None, None, :, :, :] * kernel_val, axis=4) # shape=(batch, nsamples+1,)
+
+    if reduction == 'mean':
+        final_loss = torch.mean(loss, axis=3)
+    elif reduction == 'sum':
+        final_loss = torch.sum(loss, axis=3)
+    elif reduction == 'none':
+        final_loss = loss
+    else:
+        raise ValueError()
+    return final_loss.mean()
 
 def energy_distance(x, x_sample):
     l1 = 0.

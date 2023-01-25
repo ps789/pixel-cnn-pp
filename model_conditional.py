@@ -6,60 +6,13 @@ from torch.autograd import Variable
 from layers import * 
 from utils import * 
 import numpy as np
-
-class PixelCNNLayer_up(nn.Module):
-    def __init__(self, nr_resnet, nr_filters, resnet_nonlinearity):
-        super(PixelCNNLayer_up, self).__init__()
-        self.nr_resnet = nr_resnet
-        # stream from pixels above
-        self.u_stream = nn.ModuleList([gated_resnet(nr_filters, down_shifted_conv2d, 
-                                        resnet_nonlinearity, skip_connection=0) 
-                                            for _ in range(nr_resnet)])
-        
-        # stream from pixels above and to thes left
-        self.ul_stream = nn.ModuleList([gated_resnet(nr_filters, down_right_shifted_conv2d, 
-                                        resnet_nonlinearity, skip_connection=1) 
-                                            for _ in range(nr_resnet)])
-
-    def forward(self, u, ul):
-        u_list, ul_list = [], []
-        
-        for i in range(self.nr_resnet):
-            u  = self.u_stream[i](u)
-            ul = self.ul_stream[i](ul, a=u)
-            u_list  += [u]
-            ul_list += [ul]
-
-        return u_list, ul_list
+from model import PixelCNNLayer_up, PixelCNNLayer_down
 
 
-class PixelCNNLayer_down(nn.Module):
-    def __init__(self, nr_resnet, nr_filters, resnet_nonlinearity):
-        super(PixelCNNLayer_down, self).__init__()
-        self.nr_resnet = nr_resnet
-        # stream from pixels above
-        self.u_stream  = nn.ModuleList([gated_resnet(nr_filters, down_shifted_conv2d, 
-                                        resnet_nonlinearity, skip_connection=1) 
-                                            for _ in range(nr_resnet)])
-        
-        # stream from pixels above and to thes left
-        self.ul_stream = nn.ModuleList([gated_resnet(nr_filters, down_right_shifted_conv2d, 
-                                        resnet_nonlinearity, skip_connection=2) 
-                                            for _ in range(nr_resnet)])
-
-    def forward(self, u, ul, u_list, ul_list):
-        for i in range(self.nr_resnet):
-            u  = self.u_stream[i](u, a=u_list.pop())
-            ul = self.ul_stream[i](ul, a=torch.cat((u, ul_list.pop()), 1))
-        
-        return u, ul
-         
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-class PixelCNN(nn.Module):
+class PixelCNN_Conditional(nn.Module):
     def __init__(self, nr_resnet=5, nr_filters=80, nr_logistic_mix=10, 
                     resnet_nonlinearity='concat_elu', input_channels=3):
-        super(PixelCNN, self).__init__()
+        super(PixelCNN_Conditional, self).__init__()
         if resnet_nonlinearity == 'concat_elu' : 
             self.resnet_nonlinearity = lambda x : concat_elu(x)
         else : 
@@ -97,14 +50,15 @@ class PixelCNN(nn.Module):
                                             filter_size=(1,3), shift_output_down=True), 
                                        down_right_shifted_conv2d(input_channels + 1, nr_filters, 
                                             filter_size=(2,1), shift_output_right=True)])
+
+        # need two convnets to embed alpha to dimensions 32x32, 16x16, and 8x8
+        self.alpha_embedder = nn.ModuleList([
+            nn.Conv2d(input_channels, nr_filters, kernel_size=(1,1), stride=(1,1)),
+            nn.Conv2d(input_channels, nr_filters, kernel_size=(2,2), stride=(2,2)),
+            nn.Conv2d(input_channels, nr_filters, kernel_size=(4,4), stride=(4,4)),
+        ])
     
         num_mix = 3 if self.input_channels == 1 else 10
-        
-        #self.nin_out = nin(nr_filters, num_mix * nr_logistic_mix)
-        #self.nin_energy = nin(nr_filters, 64)
-        #self.nin_energy2 = nin(4, 64)
-        #self.nin_energy3 = nin(128, 64)
-        #self.nin_energy4 = nin(128, input_channels)#change with block size
         self.nin_energy = nn.ModuleList([nin(nr_filters + input_channels, nr_filters + input_channels) for _ in range(4)])
         self.nin_out = nin(nr_filters+input_channels, input_channels)
         self.init_padding = None
@@ -112,13 +66,14 @@ class PixelCNN(nn.Module):
 
     def forward(self, x, alpha, sample=False):
         # similar as done in the tf repo :  
-        xs =  [int(y) for y in x.size()]
-
         if self.init_padding is None and not sample: 
+            xs = [int(y) for y in x.size()]
             padding = Variable(torch.ones(xs[0], 1, xs[2], xs[3]), requires_grad=False)
             self.init_padding = padding.cuda() if x.is_cuda else padding
         
+        # IMPORTANT: WHY IS THERE AN EXTRA CHANNEL ADDED?
         if sample : 
+            xs = [int(y) for y in x.size()]
             padding = Variable(torch.ones(xs[0], 1, xs[2], xs[3]), requires_grad=False)
             padding = padding.cuda() if x.is_cuda else padding
             x = torch.cat((x, padding), 1)
@@ -129,7 +84,11 @@ class PixelCNN(nn.Module):
         ul_list = [self.ul_init[0](x) + self.ul_init[1](x)]
         for i in range(3):
             # resnet block
+            u_list[-1] += self.alpha_embedder[i](alpha)
+            ul_list[-1] += self.alpha_embedder[i](alpha)
             u_out, ul_out = self.up_layers[i](u_list[-1], ul_list[-1])
+            # add alpha embeddings
+
             u_list  += u_out
             ul_list += ul_out
 
@@ -146,44 +105,25 @@ class PixelCNN(nn.Module):
             # resnet block
             u, ul = self.down_layers[i](u, ul, u_list, ul_list)
 
+            # add alpha embeddings
+            u += self.alpha_embedder[2-i](alpha)
+            ul += self.alpha_embedder[2-i](alpha)
+
             # upscale (only twice)
             if i != 2 :
                 u  = self.upsize_u_stream[i](u)
-                ul = self.upsize_ul_stream[i](ul)
+                ul = self.upsize_ul_stream[i](ul)    
         if True:
             f = F.elu(ul)
-            fs = []
-            for rep in range(10):
-                fs.append(f)
-            f = torch.cat(fs, 0)
-
-            fs = [int(y) for y in f.size()]
-            #sample = torch.rand(size = [fs[0]] + [self.input_channels] + fs[2:]).cuda()
             output = torch.cat([f, alpha], dim = 1)
             for i in range(4):
                 output = F.elu(self.nin_energy[i](output)) + output
-            output = torch.split(torch.tanh(self.nin_out(output)), xs[0])
+            output = torch.tanh(self.nin_out(output))
             return output
-        if False:#energy_distance:
-            f = self.nin_energy(F.elu(ul))
-            # generate 10 samples
-            fs = []
-            for rep in range(4):
-                fs.append(f)
-            f = torch.cat(fs, 0)
-            fs = [int(y) for y in f.size()]
-            f += self.nin_energy2((torch.rand(size=[fs[0]] + [4] + fs[2:])*2-1).cuda())
-            f = self.nin_energy3(concat_elu(f))
-            #multiply 3 by block size
-            x_sample = torch.tanh(self.nin_energy4(concat_elu(f)))
-            print(x_sample.shape)
-            x_sample = torch.split(x_sample, xs[0])
-            return x_sample
         if False:
             x_out = self.nin_out(F.elu(ul))
 
-        assert len(u_list) == len(ul_list) == 0, pdb.set_trace()
-
+            assert len(u_list) == len(ul_list) == 0, pdb.set_trace()
         return x_out
         
 

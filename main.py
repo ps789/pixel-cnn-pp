@@ -13,6 +13,7 @@ from utils import *
 from model import * 
 from PIL import Image
 from tqdm import tqdm
+from model_conditional import *
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(torch.cuda.is_available())
 print(torch.cuda.device_count())
@@ -38,8 +39,8 @@ parser.add_argument('-n', '--nr_filters', type=int, default=160,
 parser.add_argument('-m', '--nr_logistic_mix', type=int, default=10,
                     help='Number of logistic components in the mixture. Higher = more flexible model')
 parser.add_argument('-l', '--lr', type=float,
-                    default=5e-5, help='Base learning rate')
-parser.add_argument('-e', '--lr_decay', type=float, default=0.999995,
+                    default=3e-4, help='Base learning rate')
+parser.add_argument('-e', '--lr_decay', type=float, default=1,
                     help='Learning rate decay, applied every step of the optimization')
 parser.add_argument('-b', '--batch_size', type=int, default=50,
                     help='Batch size during training per GPU')
@@ -49,14 +50,15 @@ parser.add_argument('-s', '--seed', type=int, default=1,
                     help='Random seed to use')
 parser.add_argument('-z', '--block_dim', type=int,
                     default=1, help='What is the block size?')
-
+parser.add_argument('-c', '--conditional', action = 'store_true')
+parser.add_argument('--name', type = str, default = "pcnn", help = "name of model")
 args = parser.parse_args()
 
 # reproducibility
 torch.manual_seed(args.seed)
 np.random.seed(args.seed)
 
-model_name = 'apcnn_kernel_block{}'.format(args.block_dim)
+model_name = args.name+('{}'.format(args.block_dim))
 assert not os.path.exists(os.path.join('runs', model_name)), '{} already exists!'.format(model_name)
 writer = SummaryWriter(log_dir=os.path.join('runs', model_name))
 
@@ -119,12 +121,15 @@ elif 'cifar' in args.dataset :
                                        download=True, transform=ds_transforms)
     test_loader = torch.utils.data.DataLoader(testset, batch_size=args.batch_size,
                                          shuffle=False, num_workers=2)
-    loss_op   = lambda real, fake : kernelized_energy_distance(real, fake, device = device, reduction = "sum")#discretized_mix_logistic_loss(real, fake)
+    loss_op   = lambda real, fake : energy_distance(real, fake)#kernelized_energy_distance(real, fake, device = device, reduction = "sum")#discretized_mix_logistic_loss(real, fake)
     sample_op = lambda x : x[0]#sample_from_discretized_mix_logistic(x, args.nr_logistic_mix)
 else :
     raise Exception('{} dataset not in {mnist, cifar10}'.format(args.dataset))
-
-model = PixelCNN(nr_resnet=args.nr_resnet, nr_filters=args.nr_filters*args.block_dim, 
+if args.conditional:
+    model = PixelCNN_Conditional(nr_resnet=args.nr_resnet, nr_filters=args.nr_filters*args.block_dim, 
+            input_channels=input_channels, nr_logistic_mix=args.nr_logistic_mix)
+else:
+    model = PixelCNN(nr_resnet=args.nr_resnet, nr_filters=args.nr_filters*args.block_dim,
             input_channels=input_channels, nr_logistic_mix=args.nr_logistic_mix)
 model = model.cuda()
 
@@ -160,7 +165,19 @@ for epoch in range(args.max_epochs):
         for batch_idx, (input,_) in pbar:
             input = input.cuda(non_blocking=True)
             input = Variable(input)
-            output = model(input)
+            
+
+            fs = [int(y) for y in input.shape]
+            if not args.conditional:
+                fs[0] = fs[0]*10
+            alpha = torch.rand(fs).cuda()
+            alpha2 = torch.rand(fs).cuda()
+            if args.conditional:
+                output = model(input, alpha)
+                output2 = model(input, alpha2)
+                output = (output, output2)
+            else:
+                output = model(input, alpha)
             loss = loss_op(input, output)
             optimizer.zero_grad()
             loss.backward()
@@ -189,7 +206,18 @@ for epoch in range(args.max_epochs):
     for batch_idx, (input,_) in enumerate(test_loader):
         input = input.cuda(non_blocking=True)
         input_var = Variable(input)
-        output = model(input_var)
+        fs = [int(y) for y in input.shape]
+        if not args.conditional:
+            fs[0] = fs[0]*10
+        alpha = torch.rand(fs).cuda()
+        alpha2 = torch.rand(fs).cuda()
+        if args.conditional:
+            output = model(input, alpha)
+            output2 = model(input, alpha2)
+            output = (output, output2)
+        else:
+            output = model(input, alpha)
+
         loss = loss_op(input_var, output)
         test_loss += loss.data.item()
         del loss, output

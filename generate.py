@@ -12,6 +12,7 @@ from tensorboardX import SummaryWriter
 from utils import * 
 from model import * 
 from PIL import Image
+from model_conditional import *
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 parser = argparse.ArgumentParser()
 # data I/O
@@ -46,6 +47,8 @@ parser.add_argument('-s', '--seed', type=int, default=1,
                     help='Random seed to use')
 parser.add_argument('-z', '--block_dim', type=int,
                     default=1, help='What is the block size?')
+parser.add_argument('-c', '--conditional', action = 'store_true')
+parser.add_argument('--name', type = str, default = "pcnn", help = "name of model")
 
 args = parser.parse_args()
 
@@ -118,8 +121,11 @@ elif 'cifar' in args.dataset :
     sample_op = lambda x : x[0]#sample_from_discretized_mix_logistic(x, args.nr_logistic_mix)
 else :
     raise Exception('{} dataset not in {mnist, cifar10}'.format(args.dataset))
-
-model = PixelCNN(nr_resnet=args.nr_resnet, nr_filters=args.nr_filters * args.block_dim, 
+if args.conditional:
+    model = PixelCNN_Conditional(nr_resnet=args.nr_resnet, nr_filters=args.nr_filters*args.block_dim,
+            input_channels=input_channels, nr_logistic_mix=args.nr_logistic_mix)
+else:
+    model = PixelCNN(nr_resnet=args.nr_resnet, nr_filters=args.nr_filters*args.block_dim,
             input_channels=input_channels, nr_logistic_mix=args.nr_logistic_mix)
 model = model.cuda()
 
@@ -135,11 +141,19 @@ def sample(model):
     model.train(False)
     data = torch.zeros(sample_batch_size, obs[0]*args.block_dim * args.block_dim, obs[1]//args.block_dim, obs[2]//args.block_dim)
     data = data.cuda()
+    fs = [int(y) for y in data.shape]
+    if not args.conditional:
+        fs[0] = fs[0]*10
+    alpha = torch.rand(fs).cuda()
+
     for i in range(obs[1]//args.block_dim):
         for j in range(obs[2]//args.block_dim):
             data_v = Variable(data, volatile=True)
-            out   = model(data_v, sample=True)
-            out_sample = sample_op(out)
+            out   = model(data_v, alpha, sample=True)
+            if args.conditional:
+                out_sample = out
+            else:
+                out_sample = sample_op(out)
             data[:, :, i, j] = out_sample.data[:, :, i, j]
     data = data.cpu().detach().numpy()
     pixels2 = np.zeros(shape=(sample_batch_size, obs[0], obs[1], obs[2]))
@@ -158,7 +172,7 @@ model.eval()
 with torch.no_grad():
     sample_list = []
     start_time = time.time()
-    for i in range(100):
+    for i in range(1):
         print(i, flush = True)
         sample_t = sample(model)
         sample_t = rescaling_inv(sample_t)
@@ -166,6 +180,6 @@ with torch.no_grad():
     print(time.time() - start_time, flush = True)
     final_sample = np.concatenate(sample_list, axis = 0)
 
-    np.save("block{}_alt.npy".format(args.block_dim), final_sample)
+    np.save("block{}_alt_conditional.npy".format(args.block_dim), final_sample)
 #print(sample_t.size(), flush = True)
 #utils.save_image(sample_t,'images/samples.png',            nrow=5, padding=0)
